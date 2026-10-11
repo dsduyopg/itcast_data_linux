@@ -125,7 +125,24 @@ function Sync-Now {
     try {
         Clear-StaleLock
         $addOut = git -C $RepoPath add -A 2>&1
-        if ($LASTEXITCODE -ne 0) { Write-Log "git add 失败：$addOut"; return }
+        if ($LASTEXITCODE -ne 0) { Write-Log "git add 失败：$addOut"; return }
+        # ---- 大文件保护：远端单文件上限 100MB，超标文件一律不入库 ----
+        $MaxFileMB = 95
+        $prevEnc2 = [Console]::OutputEncoding
+        try {
+            [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+            $stagedFiles = @(git -C $RepoPath -c core.quotePath=false diff --cached --name-only 2>$null)
+        } finally { [Console]::OutputEncoding = $prevEnc2 }
+        foreach ($rel in $stagedFiles) {
+            if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+            $full = Join-Path $RepoPath ($rel -replace '/', '\')
+            if (-not (Test-Path -LiteralPath $full)) { continue }
+            $len = (Get-Item -LiteralPath $full).Length
+            if ($len -gt ($MaxFileMB * 1MB)) {
+                git -C $RepoPath reset -q -- ":(literal)$rel" 2>&1 | Out-Null
+                Write-Log ("已跳过超大文件（{0:N1}MB > {1}MB）：{2}" -f ($len / 1MB), $MaxFileMB, $rel)
+            }
+        }
         $status = git -C $RepoPath status --porcelain
         if ([string]::IsNullOrWhiteSpace($status)) { Write-Log '无实际文件变动，跳过提交'; return }
         $msg = "auto-sync: {0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')

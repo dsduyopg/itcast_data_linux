@@ -6,3 +6,7 @@ status.tmp
 # 系统文件
 .DS_Store
 Thumbs.db
+# ==== 大文件保护：远端单文件上限 100MB，以下不入库（本地保留）====
+*.tar.gz
+*.tar
+*.war
