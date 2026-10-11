@@ -1,0 +1,28 @@
+1.在您的Linux系统主目录 / 中，创建一个名为my_linux_project的新目录。
+
+mkdir -p /my_linux_project
+
+2.导航到my_linux_project目录，并在其中创建以下子目录和文件：
+cd /my_linux_project
+子目录：src（用于存放源代码）、docs（用于存放文档）、bin（用于存放可执行文件）。
+mkdir -p src docs bin
+文件：在src目录中创建一个名为main.c的空文件，在docs目录中创建一个名为README.md的文件，并向其中写入一行内容：“This is my Linux project.”
+cd /my_linux_project/src
+touch main.c
+
+cd /my_linux_project/docs  
+方式一：
+touch README.md
+vim README.md
+输入i进入插入模式， 然后填写 This is my Linux project. 最后esc退出， 使用:x退出
+
+方式二：
+touch README.md
+echo 'This is my Linux project.' > README.md
+
+3.查看my_linux_project目录及其子目录的内容，确认所有文件和目录都已正确创建。
+tree /my_linux_project
+
+
+4.查看README.md文件的内容，验证写入是否成功。
+cat /my_linux_project/docs/README.md
