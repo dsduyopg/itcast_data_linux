@@ -1,4 +1,4 @@
-﻿# 忽略日志和同步文件
+# 忽略日志和同步文件
 sync.log
 git_sync*.log
 git_sync_service*.log
@@ -10,3 +10,4 @@ Thumbs.db
 *.tar.gz
 *.tar
 *.war
+*.jar
