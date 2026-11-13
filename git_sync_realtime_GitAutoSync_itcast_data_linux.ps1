@@ -1,18 +1,180 @@
 ﻿# ============================================================
-# Git 实时自动同步脚本 - 自动生成
+# Git 实时自动同步脚本（v2，含状态查看）
 # 路径: D:\linux\itcast_data_linux  ->  ssh://git@ssh.github.com:443/dsduyopg/itcast_data_linux.git (origin/main)
+#
+# 用法:
+#   .\git_sync_realtime_GitAutoSync_itcast_data_linux.ps1
+#       -> 实时监听并自动同步（默认，服务模式，原行为不变）
+#   .\git_sync_realtime_GitAutoSync_itcast_data_linux.ps1 -Status
+#       -> 打开状态查看菜单（备份状态 / 上传状态 / 上传文件 status，可选择仓库）
+#   .\git_sync_realtime_GitAutoSync_itcast_data_linux.ps1 -Status -Repo itcast_data_linux
+#       -> 直接查看指定仓库状态（不进入菜单）
 # ============================================================
+
+param(
+    [switch]$Status,          # 状态查看模式
+    [string]$Repo             # 指定要查看的仓库名（配合 -Status 使用）
+)
 
 $ErrorActionPreference = 'Continue'
 
-$RepoPath      = 'D:\linux\itcast_data_linux'
-$Branch        = 'main'
-$Remote        = 'origin'
+# ---- 仓库配置：可在此添加/修改需要同步与查看的仓库 ----
+# 字段说明: Name=显示名  Path=本地路径  Branch=分支  Remote=远程名
+$Repos = @(
+    @{ Name = 'itcast_data_linux'; Path = 'D:\linux\itcast_data_linux'; Branch = 'main'; Remote = 'origin' }
+    # 追加更多仓库（取消注释，按需修改）：
+    # @{ Name = 'repo2'; Path = 'D:\linux\repo2'; Branch = 'main'; Remote = 'origin' }
+)
+
+# 主仓库 = 配置列表第 1 个（实时监听/自动同步服务使用，行为不变）
+$RepoPath      = $Repos[0].Path
+$Branch        = $Repos[0].Branch
+$Remote        = $Repos[0].Remote
 $LogFile       = Join-Path $RepoPath 'git_sync.log'
 $DebounceMs    = 3000
 $RetryTimes    = 3
 $RetryWaitSec  = 5
 $IgnoredPaths  = @()
+
+# ============================================================
+# 状态查看功能（-Status）
+# 备份状态 / 上传状态 / 上传文件 status
+# ============================================================
+function Show-RepoStatus {
+    param([hashtable]$Repo)
+    $path   = $Repo.Path
+    $branch = $Repo.Branch
+    $remote = $Repo.Remote
+
+    Write-Host ""
+    Write-Host ("=" * 72)
+    Write-Host ("仓库: {0}" -f $Repo.Name) -ForegroundColor Cyan
+    Write-Host ("路径: {0}" -f $path)
+    Write-Host ("分支: {0}    远程: {1}" -f $branch, $remote)
+    Write-Host ("=" * 72)
+
+    if (-not (Test-Path $path)) { Write-Host "[错误] 目录不存在" -ForegroundColor Red; return }
+    if (-not (Test-Path (Join-Path $path '.git'))) { Write-Host "[错误] 不是 git 仓库" -ForegroundColor Red; return }
+
+    $prevEnc = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+        # ---------- 1. 备份状态 ----------
+        Write-Host ""
+        Write-Host "【1. 备份状态】" -ForegroundColor Yellow
+        $porcelain = @(git -C $path -c core.quotePath=false status --porcelain 2>$null)
+        if ($porcelain.Count -eq 0) {
+            Write-Host "  工作区: 干净，所有内容已入库" -ForegroundColor Green
+        } else {
+            $m = @($porcelain | Where-Object { $_ -match '^[MADRCU]' }).Count
+            $u = @($porcelain | Where-Object { $_ -match '^.[MADRCU]' }).Count
+            $t = @($porcelain | Where-Object { $_ -match '^\?\?' }).Count
+            Write-Host ("  工作区: {0} 项改动 (已暂存 {1} / 未暂存 {2} / 未跟踪 {3})" -f $porcelain.Count, $m, $u, $t) -ForegroundColor Yellow
+        }
+        $last = git -C $path -c core.quotePath=false log -1 --format="%h|%ad|%s" --date=format:"%Y-%m-%d %H:%M:%S" 2>$null
+        if ($last) {
+            $p = $last -split '\|'
+            Write-Host ("  最近提交: {0}  {1}" -f $p[0], $p[1])
+            Write-Host ("  提交说明: {0}" -f $p[2])
+        } else {
+            Write-Host "  最近提交: (无)" -ForegroundColor Yellow
+        }
+
+        # ---------- 2. 上传状态 ----------
+        Write-Host ""
+        Write-Host "【2. 上传状态】" -ForegroundColor Yellow
+        $url = git -C $path remote get-url $remote 2>$null
+        if ($url) { Write-Host ("  远程地址: {0}" -f $url) }
+        $remoteRef = "$remote/$branch"
+        $hasRemoteRef = git -C $path rev-parse --verify "$remoteRef" 2>$null
+        if ($hasRemoteRef) {
+            $ahead  = (git -C $path rev-list --count "$remoteRef..$branch" 2>$null).Trim()
+            $behind = (git -C $path rev-list --count "$branch..$remoteRef" 2>$null).Trim()
+            if ([int]$ahead -gt 0) {
+                Write-Host ("  未推送提交: {0} 个（本地领先远程）" -f $ahead) -ForegroundColor Red
+            } else {
+                Write-Host "  未推送提交: 0 个（本地与远程一致）" -ForegroundColor Green
+            }
+            if ([int]$behind -gt 0) {
+                Write-Host ("  远程领先本地: {0} 个（可 git pull 更新）" -f $behind) -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host ("  未发现远程引用 {0}（首次推送前属正常）" -f $remoteRef) -ForegroundColor Yellow
+        }
+        $logFile = Join-Path $path 'git_sync.log'
+        if (Test-Path $logFile) {
+            $logLines = @(Get-Content $logFile -ErrorAction SilentlyContinue)
+            $lastOk   = $logLines | Select-String '推送成功' | Select-Object -Last 1
+            $lastFail = $logLines | Select-String '推送失败' | Select-Object -Last 1
+            if ($lastOk)   { Write-Host ("  最近推送成功: {0}" -f $lastOk.Line) -ForegroundColor Green }
+            if ($lastFail) { Write-Host ("  最近推送失败: {0}" -f $lastFail.Line) -ForegroundColor Red }
+            $skip = @($logLines | Select-String '已跳过超大文件' | Select-Object -Last 5)
+            if ($skip.Count -gt 0) {
+                Write-Host "  被跳过的大文件（最近 5 条）:" -ForegroundColor Yellow
+                foreach ($s in $skip) { Write-Host ("    {0}" -f $s.Line.Trim()) -ForegroundColor DarkYellow }
+            }
+        } else {
+            Write-Host "  无同步日志文件 ($logFile)" -ForegroundColor DarkGray
+        }
+
+        # ---------- 3. 上传文件 status ----------
+        Write-Host ""
+        Write-Host "【3. 上传文件 status】" -ForegroundColor Yellow
+        if ($porcelain.Count -eq 0) {
+            Write-Host "  当前无未提交/未上传文件" -ForegroundColor Green
+        } else {
+            Write-Host "  当前工作区改动（git status --porcelain）:"
+            foreach ($line in $porcelain) { Write-Host ("    {0}" -f $line) -ForegroundColor Yellow }
+        }
+        $lastCommitFiles = git -C $path -c core.quotePath=false show --name-status --format="" HEAD 2>$null
+        if ($lastCommitFiles) {
+            Write-Host "  最近一次提交的文件:" -ForegroundColor Cyan
+            foreach ($f in $lastCommitFiles) { if ($f.Trim()) { Write-Host ("    {0}" -f $f.Trim()) } }
+        }
+    } finally {
+        [Console]::OutputEncoding = $prevEnc
+    }
+}
+
+function Show-RepoStatusByName {
+    param([string]$Name)
+    foreach ($r in $Repos) {
+        if ($r.Name -ieq $Name) { Show-RepoStatus $r; return }
+    }
+    Write-Host "未找到仓库: $Name" -ForegroundColor Red
+    Write-Host "可用仓库:"
+    foreach ($r in $Repos) { Write-Host ("  {0}  ({1})" -f $r.Name, $r.Path) }
+}
+
+function Show-StatusMenu {
+    while ($true) {
+        Write-Host ""
+        Write-Host "=========== Git 同步状态查看 ===========" -ForegroundColor Cyan
+        for ($i = 0; $i -lt $Repos.Count; $i++) {
+            $mark = if ($i -eq 0) { ' (主仓库)' } else { '' }
+            Write-Host ("  [{0}] {1}{2}" -f ($i + 1), $Repos[$i].Name, $mark)
+        }
+        Write-Host "  [A] 查看全部仓库"
+        Write-Host "  [Q] 退出"
+        $sel = Read-Host "请选择编号"
+        if ($sel -match '^[Qq]$') { break }
+        if ($sel -match '^[Aa]$') { foreach ($r in $Repos) { Show-RepoStatus $r }; continue }
+        if ($sel -match '^\d+$') {
+            $idx = [int]$sel - 1
+            if ($idx -ge 0 -and $idx -lt $Repos.Count) { Show-RepoStatus $Repos[$idx] }
+            else { Write-Host "编号超出范围" -ForegroundColor Red }
+        } else {
+            Write-Host "无效输入" -ForegroundColor Red
+        }
+    }
+}
+
+# ---- 状态查看模式（-Status）：查看备份/上传/文件状态，可选择仓库 ----
+if ($Status) {
+    if ($Repo) { Show-RepoStatusByName $Repo } else { Show-StatusMenu }
+    exit
+}
 
 if (-not (Test-Path $RepoPath)) {
     Write-Host "错误：目录不存在 $RepoPath"
@@ -125,7 +287,7 @@ function Sync-Now {
     try {
         Clear-StaleLock
         $addOut = git -C $RepoPath add -A 2>&1
-        if ($LASTEXITCODE -ne 0) { Write-Log "git add 失败：$addOut"; return }
+        if ($LASTEXITCODE -ne 0) { Write-Log "git add 失败：$addOut"; return }
         # ---- 大文件保护：远端单文件上限 100MB，超标文件一律不入库 ----
         $MaxFileMB = 95
         $prevEnc2 = [Console]::OutputEncoding
